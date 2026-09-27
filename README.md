@@ -429,7 +429,8 @@ Where `left` can be either `left`, `right`, `top` or `bottom`.
 - [ ] X11 Input Capture
 - [ ] Latency measurement and visualization
 - [ ] Bandwidth usage measurement and visualization
-- [ ] Clipboard support
+- [x] Clipboard support
+- [x] Cross-platform File transfers
 
 
 ## Detailed OS Support
