@@ -45,6 +45,8 @@ pub(crate) enum ICaptureEvent {
     /// remote `Leave`, explicit `Release` request, send
     /// failure, or destroy of the active capture).
     ClientLeft(u64),
+    /// The cursor crossed a local screen edge (position, fraction along the edge)
+    EdgeFlash(lan_mouse_ipc::Position, f64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,6 +306,12 @@ impl CaptureTask {
                             // place the cursor at the same fraction along the edge
                             // where it left the remote device
                             if let (Some(active), Some(edge)) = (active, edge) {
+                                self.event_tx
+                                    .send(ICaptureEvent::EdgeFlash(
+                                        to_ipc_pos(self.get_pos(active)),
+                                        edge,
+                                    ))
+                                    .expect("channel closed");
                                 capture.warp_to_edge(active, edge).await?;
                             }
                         },
@@ -380,6 +388,14 @@ impl CaptureTask {
         if matches!(event, CaptureEvent::Begin(_)) && Some(handle) != self.active_client {
             self.state = State::WaitingForAck;
             self.active_client.replace(handle);
+            if let CaptureEvent::Begin(Some(fraction)) = event {
+                self.event_tx
+                    .send(ICaptureEvent::EdgeFlash(
+                        to_ipc_pos(self.get_pos(handle)),
+                        fraction,
+                    ))
+                    .expect("channel closed");
+            }
             self.event_tx
                 .send(ICaptureEvent::ClientEntered(handle))
                 .expect("channel closed");
@@ -479,6 +495,15 @@ fn to_capture_pos(pos: lan_mouse_ipc::Position) -> input_capture::Position {
         lan_mouse_ipc::Position::Right => input_capture::Position::Right,
         lan_mouse_ipc::Position::Top => input_capture::Position::Top,
         lan_mouse_ipc::Position::Bottom => input_capture::Position::Bottom,
+    }
+}
+
+fn to_ipc_pos(pos: input_capture::Position) -> lan_mouse_ipc::Position {
+    match pos {
+        input_capture::Position::Left => lan_mouse_ipc::Position::Left,
+        input_capture::Position::Right => lan_mouse_ipc::Position::Right,
+        input_capture::Position::Top => lan_mouse_ipc::Position::Top,
+        input_capture::Position::Bottom => lan_mouse_ipc::Position::Bottom,
     }
 }
 

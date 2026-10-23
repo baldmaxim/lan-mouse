@@ -40,6 +40,12 @@ pub(crate) enum EmulationEvent {
         pos: lan_mouse_ipc::Position,
         /// certificate fingerprint of the connection
         fingerprint: String,
+        /// fraction (0..1) along the edge where the cursor entered, if known
+        edge: Option<f64>,
+    },
+    /// the peer released control (sent `Leave`)
+    PeerLeft {
+        addr: SocketAddr,
     },
     /// connection closed
     Disconnected {
@@ -153,7 +159,7 @@ impl ListenTask {
                                     log::info!("releasing capture: {addr} entered this device");
                                     self.event_tx.send(EmulationEvent::ReleaseNotify).expect("channel closed");
                                     self.listener.reply(addr, ProtoEvent::Ack(0)).await;
-                                    self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint}).expect("channel closed");
+                                    self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint, edge}).expect("channel closed");
                                     // place the cursor at the same fraction along the edge where it left the peer
                                     if let Some(edge) = edge {
                                         self.emulation_proxy.warp(to_edge(pos), edge);
@@ -163,6 +169,7 @@ impl ListenTask {
                             ProtoEvent::Leave(_, _) => {
                                 self.emulation_proxy.remove(addr);
                                 self.listener.reply(addr, ProtoEvent::Ack(0)).await;
+                                self.event_tx.send(EmulationEvent::PeerLeft { addr }).expect("channel closed");
                             }
                             ProtoEvent::Input(event) => self.emulation_proxy.consume(event, addr),
                             ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong(self.emulation_proxy.emulation_active.get())).await,

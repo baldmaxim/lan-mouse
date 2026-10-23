@@ -70,6 +70,9 @@ pub struct Service {
     /// map from capture handle to connection info
     incoming_conn_info: HashMap<ClientHandle, Incoming>,
     next_trigger_handle: u64,
+    /// the peer that currently controls this device's cursor (if any),
+    /// used to only flash the edge on real transitions
+    controlled_by: Option<SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -139,6 +142,7 @@ impl Service {
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
+            controlled_by: None,
         };
         Ok(service)
     }
@@ -310,7 +314,16 @@ impl Service {
                 addr,
                 pos,
                 fingerprint,
+                edge,
             } => {
+                // the cursor arrived from a peer that did not control us before
+                if self.controlled_by != Some(addr) {
+                    if let Some(fraction) = edge {
+                        self.notify_frontend(FrontendEvent::EdgeFlash { pos, fraction });
+                    }
+                    self.controlled_by = Some(addr);
+                }
+
                 // check if already registered
                 if !self.incoming_conns.contains(&addr) {
                     self.add_incoming(addr, pos, fingerprint.clone());
@@ -327,7 +340,15 @@ impl Service {
                     let _ = crate::clipboard::ACTIVE_CLIPBOARD_PEER.send(Some(handle));
                 }
             }
+            EmulationEvent::PeerLeft { addr } => {
+                if self.controlled_by == Some(addr) {
+                    self.controlled_by = None;
+                }
+            }
             EmulationEvent::Disconnected { addr } => {
+                if self.controlled_by == Some(addr) {
+                    self.controlled_by = None;
+                }
                 if let Some(addr) = self.remove_incoming(addr) {
                     self.notify_frontend(FrontendEvent::IncomingDisconnected(addr));
                 }
@@ -385,7 +406,19 @@ impl Service {
                 // => notify it that its capture should be released
                 if let Some(incoming) = self.incoming_conn_info.get(&handle) {
                     self.emulation.send_leave_event(incoming.addr, edge);
+                    // flash only if the cursor goes back to the peer controlling us,
+                    // not on every touch of the edge with the local mouse
+                    if self.controlled_by == Some(incoming.addr) {
+                        if let Some(fraction) = edge {
+                            let pos = incoming.pos;
+                            self.notify_frontend(FrontendEvent::EdgeFlash { pos, fraction });
+                        }
+                        self.controlled_by = None;
+                    }
                 }
+            }
+            ICaptureEvent::EdgeFlash(pos, fraction) => {
+                self.notify_frontend(FrontendEvent::EdgeFlash { pos, fraction });
             }
             ICaptureEvent::CaptureDisabled => {
                 self.capture_status = Status::Disabled;

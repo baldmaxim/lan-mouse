@@ -2044,12 +2044,18 @@ name = "lan-mouse-gtk"
 version = "0.3.0"
 dependencies = [
  "async-channel",
+ "block2",
  "glib-build-tools",
  "gtk4",
  "hostname",
+ "input-event",
  "lan-mouse-ipc",
  "libadwaita",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
  "semver",
  "serde",
  "serde_json",
@@ -2465,9 +2471,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.11.0",
+ "block2",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-quartz-core",
 ]
 
 [[package]]
@@ -2507,6 +2515,17 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-quartz-core"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
+dependencies = [
+ "bitflags 2.11.0",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]

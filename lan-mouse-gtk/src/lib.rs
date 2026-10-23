@@ -1,6 +1,7 @@
 mod authorization_window;
 mod client_object;
 mod client_row;
+mod edge_glow;
 mod fingerprint_window;
 mod key_object;
 mod key_row;
@@ -349,6 +350,9 @@ fn build_ui(app: &Application, hidden: bool) {
                         pos,
                     } => {
                         window.show_toast(format!("device entered: {addr} ({pos})").as_str());
+                    }
+                    FrontendEvent::EdgeFlash { pos, fraction } => {
+                        edge_glow::flash(pos, fraction);
                     }
                     FrontendEvent::IncomingDisconnected(addr) => {
                         window.show_toast(format!("{addr} disconnected").as_str());

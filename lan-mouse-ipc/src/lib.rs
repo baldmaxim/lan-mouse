@@ -234,6 +234,11 @@ pub enum FrontendEvent {
         addr: SocketAddr,
         pos: Position,
     },
+    /// the cursor crossed a screen edge of this device (either way).
+    /// `pos` is the local edge, `fraction` (0..1) the position along it
+    /// (top to bottom for left / right, left to right for top / bottom),
+    /// measured relative to the union of all displays
+    EdgeFlash { pos: Position, fraction: f64 },
     /// incoming disconnected
     IncomingDisconnected(SocketAddr),
     /// failed connection attempt (approval for fingerprint required)
