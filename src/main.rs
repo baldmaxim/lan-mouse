@@ -1,3 +1,6 @@
+// no console window on Windows; CLI subcommands attach to the parent console instead
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use env_logger::Env;
 use input_capture::InputCaptureError;
 use input_emulation::InputEmulationError;
@@ -40,7 +43,24 @@ enum LanMouseError {
     Cli(#[from] CliError),
 }
 
+#[cfg(target_os = "windows")]
+fn attach_parent_console() {
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    // SAFETY: plain Win32 call; fails harmlessly when there is no parent console.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() {
+    // started from a terminal: keep logs and CLI output visible there
+    #[cfg(target_os = "windows")]
+    attach_parent_console();
+
     // init logging
     let env = Env::default().filter_or("LAN_MOUSE_LOG_LEVEL", "info");
     env_logger::init_from_env(env);
