@@ -6,6 +6,16 @@ fn main() {
         .build()
         .expect("shadow build");
 
+    // embed the application icon into the exe (Windows targets only;
+    // checks the *target*, not the host, so cross builds work too)
+    println!("cargo::rerun-if-changed=build-aux/lan-mouse.rc");
+    println!("cargo::rerun-if-changed=build-aux/lan-mouse.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_resource::compile("build-aux/lan-mouse.rc", embed_resource::NONE)
+            .manifest_required()
+            .expect("embed windows resources");
+    }
+
     let unix = cfg!(unix);
     let macos = cfg!(target_os = "macos");
 

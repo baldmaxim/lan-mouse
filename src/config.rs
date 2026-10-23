@@ -113,6 +113,10 @@ struct Args {
     #[arg(long)]
     cert_path: Option<PathBuf>,
 
+    /// start without showing the main window (tray only)
+    #[arg(long)]
+    hidden: bool,
+
     /// subcommands
     #[command(subcommand)]
     command: Option<Command>,
@@ -439,6 +443,11 @@ impl Config {
     /// the command to run
     pub fn command(&self) -> Option<Command> {
         self.args.command.clone()
+    }
+
+    /// start the frontend without presenting the main window
+    pub fn hidden(&self) -> bool {
+        self.args.hidden
     }
 
     pub fn config_path(&self) -> &Path {

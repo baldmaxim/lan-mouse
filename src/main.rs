@@ -100,7 +100,7 @@ fn run() -> Result<(), LanMouseError> {
                 } else {
                     Some(start_service()?)
                 };
-                let res = lan_mouse_gtk::run(config::local_commit());
+                let res = lan_mouse_gtk::run(config::local_commit(), config.hidden());
                 if let Some(ref mut service) = service {
                     #[cfg(unix)]
                     {

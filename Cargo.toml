@@ -25,6 +25,7 @@ panic = "abort"
 
 [build-dependencies]
 shadow-rs = "1.2.0"
+embed-resource = "3"
 
 [dependencies]
 input-event = { path = "input-event", version = "0.4.0" }

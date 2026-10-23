@@ -9,6 +9,12 @@ mod macos_privacy;
 #[cfg(target_os = "macos")]
 mod macos_status_item;
 mod window;
+#[cfg(target_os = "windows")]
+mod windows_single_instance;
+#[cfg(target_os = "windows")]
+mod windows_tray;
+#[cfg(target_os = "windows")]
+mod windows_tray_core;
 
 use std::{env, process, str, sync::OnceLock};
 
@@ -49,8 +55,18 @@ pub enum GtkError {
     NonZeroExitCode(i32),
 }
 
-pub fn run(local_commit: [u8; 8]) -> Result<(), GtkError> {
+/// Runs the GTK frontend. With `hidden` the main window is created but
+/// not presented (tray / menu bar only, e.g. for autostart).
+pub fn run(local_commit: [u8; 8], hidden: bool) -> Result<(), GtkError> {
     log::debug!("running gtk frontend");
+
+    // a frontend is already running (in the tray): ask it to show its window
+    #[cfg(target_os = "windows")]
+    if !windows_single_instance::acquire() {
+        log::info!("frontend already running, showing its window");
+        return Ok(());
+    }
+
     LOCAL_COMMIT
         .set(local_commit)
         .expect("local_commit set once");
@@ -59,12 +75,12 @@ pub fn run(local_commit: [u8; 8]) -> Result<(), GtkError> {
     let ret = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024) // https://gitlab.gnome.org/GNOME/gtk/-/commit/52dbb3f372b2c3ea339e879689c1de535ba2c2c3 -> caused crash on windows
         .name("gtk".into())
-        .spawn(gtk_main)
+        .spawn(move || gtk_main(hidden))
         .unwrap()
         .join()
         .unwrap();
     #[cfg(not(windows))]
-    let ret = gtk_main();
+    let ret = gtk_main(hidden);
 
     match ret {
         glib::ExitCode::SUCCESS => Ok(()),
@@ -72,7 +88,7 @@ pub fn run(local_commit: [u8; 8]) -> Result<(), GtkError> {
     }
 }
 
-fn gtk_main() -> glib::ExitCode {
+fn gtk_main(hidden: bool) -> glib::ExitCode {
     #[cfg(target_os = "macos")]
     {
         configure_macos_bundle_environment();
@@ -91,7 +107,7 @@ fn gtk_main() -> glib::ExitCode {
         setup_actions(app);
         setup_menu(app);
     });
-    app.connect_activate(build_ui);
+    app.connect_activate(move |app| build_ui(app, hidden));
 
     let args: Vec<&'static str> = vec![];
     app.run_with_args(&args)
@@ -198,7 +214,7 @@ fn setup_menu(app: &adw::Application) {
     app.set_menubar(Some(&menu))
 }
 
-fn build_ui(app: &Application) {
+fn build_ui(app: &Application, hidden: bool) {
     // If a window already exists (re-activation), just present it
     if let Some(window) = app.windows().first() {
         window.present();
@@ -371,8 +387,27 @@ fn build_ui(app: &Application) {
         }
     ));
 
-    #[cfg(not(target_os = "macos"))]
-    window.present();
+    // Windows: tray icon; closing the window hides it there. Without a
+    // tray the process would be invisible, so then close quits normally
+    // and the window is shown even with --hidden.
+    #[cfg(target_os = "windows")]
+    let tray_active = windows_tray::setup(app, &window);
+    #[cfg(target_os = "windows")]
+    if tray_active {
+        window.connect_close_request(|window| {
+            window.set_visible(false);
+            glib::Propagation::Stop
+        });
+    }
+    #[cfg(target_os = "windows")]
+    if !hidden || !tray_active {
+        window.present();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    if !hidden {
+        window.present();
+    }
 
     // On macOS, default to presenting the main window on every launch
     // so the user gets a visible confirmation that the app is running
@@ -382,7 +417,7 @@ fn build_ui(app: &Application) {
     // where the user wants the app to come up quietly into the menu
     // bar only, with no window on boot).
     #[cfg(target_os = "macos")]
-    if env::var_os("LAN_MOUSE_HIDDEN").is_none() {
+    if !hidden && env::var_os("LAN_MOUSE_HIDDEN").is_none() {
         window.present();
     }
 }
