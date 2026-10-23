@@ -630,6 +630,11 @@ impl Capture for LayerShellInputCapture {
     async fn terminate(&mut self) -> Result<(), CaptureError> {
         Ok(())
     }
+
+    async fn warp_to_edge(&mut self, _pos: Position, _fraction: f64) -> Result<(), CaptureError> {
+        // cursor cannot be repositioned with this backend
+        Ok(())
+    }
 }
 
 impl Stream for LayerShellInputCapture {
@@ -739,7 +744,8 @@ impl Dispatch<WlPointer, ()> for State {
                     .find(|w| w.surface == surface)
                     .map(|w| w.pos)
                     .unwrap();
-                app.pending_events.push_back((pos, CaptureEvent::Begin));
+                app.pending_events
+                    .push_back((pos, CaptureEvent::Begin(None)));
             }
             wl_pointer::Event::Leave { .. } => {
                 /* There are rare cases, where when a window is opened in

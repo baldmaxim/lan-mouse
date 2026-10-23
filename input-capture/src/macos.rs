@@ -20,6 +20,7 @@ use core_graphics::{
 use futures_core::Stream;
 use input_event::{
     BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
+    edge::{Edge, Rect, edge_fraction, edge_point},
 };
 use keycode::{KeyMap, KeyMapping};
 use libc::c_void;
@@ -37,6 +38,18 @@ use tokio::sync::{
     mpsc::{self, Receiver, Sender},
     oneshot,
 };
+
+/// distance in pixels from the screen edge for warped cursor positions
+const WARP_INSET: f64 = 2.0;
+
+fn to_edge(pos: Position) -> Edge {
+    match pos {
+        Position::Left => Edge::Left,
+        Position::Right => Edge::Right,
+        Position::Top => Edge::Top,
+        Position::Bottom => Edge::Bottom,
+    }
+}
 
 #[derive(Debug, Default)]
 struct Bounds {
@@ -66,6 +79,8 @@ enum ProducerEvent {
     Create(Position),
     Destroy(Position),
     Grab(Position),
+    /// move the cursor to the given fraction along the edge at the position
+    Warp(Position, f64),
     EventTapDisabled,
     DisplayReconfigured,
 }
@@ -99,6 +114,19 @@ impl InputCaptureState {
             }
         }
         None
+    }
+
+    /// fraction (0..1) of the event location along the edge at `position`,
+    /// relative to the bounds of all displays
+    fn edge_fraction(&self, event: &CGEvent, position: Position) -> Option<f64> {
+        let location = event.location();
+        let bounds = Rect {
+            x_min: self.bounds.xmin,
+            y_min: self.bounds.ymin,
+            x_max: self.bounds.xmax,
+            y_max: self.bounds.ymax,
+        };
+        edge_fraction(&[bounds], to_edge(position), (location.x, location.y))
     }
 
     // Get the max bounds of all displays
@@ -163,6 +191,26 @@ impl InputCaptureState {
                 if self.current_pos.is_none() {
                     self.hide_cursor()?;
                     self.current_pos = Some(pos);
+                }
+            }
+            ProducerEvent::Warp(pos, fraction) => {
+                let active_ids =
+                    CGDisplay::active_displays().map_err(CaptureError::CoreGraphics)?;
+                let rects: Vec<Rect> = active_ids
+                    .iter()
+                    .map(|d| {
+                        let b = CGDisplay::new(*d).bounds();
+                        Rect {
+                            x_min: b.origin.x,
+                            y_min: b.origin.y,
+                            x_max: b.origin.x + b.size.width,
+                            y_max: b.origin.y + b.size.height,
+                        }
+                    })
+                    .collect();
+                if let Some((x, y)) = edge_point(&rects, to_edge(pos), fraction, WARP_INSET) {
+                    CGDisplay::warp_mouse_cursor_position(CGPoint { x, y })
+                        .map_err(CaptureError::WarpCursor)?;
                 }
             }
             ProducerEvent::Create(p) => {
@@ -519,10 +567,11 @@ fn create_event_tap<'a>(
             // Did we cross a barrier?
             if let Some(new_pos) = state.crossed(cg_ev) {
                 capture_position = Some(new_pos);
+                let fraction = state.edge_fraction(cg_ev, new_pos);
                 state
                     .start_capture(cg_ev, new_pos)
                     .unwrap_or_else(|e| log::warn!("{e}"));
-                res_events.push(CaptureEvent::Begin);
+                res_events.push(CaptureEvent::Begin(fraction));
                 notify_tx
                     .blocking_send(ProducerEvent::Grab(new_pos))
                     .expect("Failed to send notification");
@@ -782,6 +831,16 @@ impl Capture for MacOSInputCapture {
     }
 
     async fn terminate(&mut self) -> Result<(), CaptureError> {
+        Ok(())
+    }
+
+    async fn warp_to_edge(&mut self, pos: Position, fraction: f64) -> Result<(), CaptureError> {
+        // spawned like `release`, so the producer events keep their order (Release, Warp)
+        let notify_tx = self.notify_tx.clone();
+        tokio::task::spawn_local(async move {
+            log::debug!("notifying Warp");
+            let _ = notify_tx.send(ProducerEvent::Warp(pos, fraction)).await;
+        });
         Ok(())
     }
 }

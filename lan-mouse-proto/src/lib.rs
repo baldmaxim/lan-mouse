@@ -50,10 +50,12 @@ impl Display for Position {
 pub enum ProtoEvent {
     /// notify a client that the cursor entered its region at the given position
     /// [`ProtoEvent::Ack`] with the same serial is used for synchronization between devices
-    Enter(Position),
+    /// the optional fraction (0..1) is the position along the edge the cursor entered at
+    Enter(Position, Option<f64>),
     /// notify a client that the cursor left its region
     /// [`ProtoEvent::Ack`] with the same serial is used for synchronization between devices
-    Leave(u32),
+    /// the optional fraction (0..1) is the position along the edge the cursor left at
+    Leave(u32, Option<f64>),
     /// acknowledge of an [`ProtoEvent::Enter`] or [`ProtoEvent::Leave`] event
     Ack(u32),
     /// Input event
@@ -77,8 +79,10 @@ pub enum ProtoEvent {
 impl Display for ProtoEvent {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProtoEvent::Enter(s) => write!(f, "Enter({s})"),
-            ProtoEvent::Leave(s) => write!(f, "Leave({s})"),
+            ProtoEvent::Enter(s, None) => write!(f, "Enter({s})"),
+            ProtoEvent::Enter(s, Some(e)) => write!(f, "Enter({s}, {e:.3})"),
+            ProtoEvent::Leave(s, None) => write!(f, "Leave({s})"),
+            ProtoEvent::Leave(s, Some(e)) => write!(f, "Leave({s}, {e:.3})"),
             ProtoEvent::Ack(s) => write!(f, "Ack({s})"),
             ProtoEvent::Input(e) => write!(f, "{e}"),
             ProtoEvent::Ping => write!(f, "ping"),
@@ -131,8 +135,8 @@ impl ProtoEvent {
             },
             ProtoEvent::Ping => EventType::Ping,
             ProtoEvent::Pong(_) => EventType::Pong,
-            ProtoEvent::Enter(_) => EventType::Enter,
-            ProtoEvent::Leave(_) => EventType::Leave,
+            ProtoEvent::Enter(..) => EventType::Enter,
+            ProtoEvent::Leave(..) => EventType::Leave,
             ProtoEvent::Ack(_) => EventType::Ack,
             ProtoEvent::Hello { .. } => EventType::Hello,
         }
@@ -186,8 +190,14 @@ impl TryFrom<[u8; MAX_EVENT_SIZE]> for ProtoEvent {
             ))),
             EventType::Ping => Ok(Self::Ping),
             EventType::Pong => Ok(Self::Pong(decode_u8(&mut buf)? != 0)),
-            EventType::Enter => Ok(Self::Enter(decode_u8(&mut buf)?.try_into()?)),
-            EventType::Leave => Ok(Self::Leave(decode_u32(&mut buf)?)),
+            EventType::Enter => {
+                let pos = decode_u8(&mut buf)?.try_into()?;
+                Ok(Self::Enter(pos, decode_edge(&mut buf)?))
+            }
+            EventType::Leave => {
+                let serial = decode_u32(&mut buf)?;
+                Ok(Self::Leave(serial, decode_edge(&mut buf)?))
+            }
             EventType::Ack => Ok(Self::Ack(decode_u32(&mut buf)?)),
             EventType::Hello => {
                 let mut commit = [0u8; 8];
@@ -257,8 +267,14 @@ impl From<ProtoEvent> for ([u8; MAX_EVENT_SIZE], usize) {
                 },
                 ProtoEvent::Ping => {}
                 ProtoEvent::Pong(alive) => encode_u8(buf, len, alive as u8),
-                ProtoEvent::Enter(pos) => encode_u8(buf, len, pos as u8),
-                ProtoEvent::Leave(serial) => encode_u32(buf, len, serial),
+                ProtoEvent::Enter(pos, edge) => {
+                    encode_u8(buf, len, pos as u8);
+                    encode_edge(buf, len, edge);
+                }
+                ProtoEvent::Leave(serial, edge) => {
+                    encode_u32(buf, len, serial);
+                    encode_edge(buf, len, edge);
+                }
                 ProtoEvent::Ack(serial) => encode_u32(buf, len, serial),
                 ProtoEvent::Hello { commit } => {
                     for b in commit.iter() {
@@ -284,6 +300,7 @@ macro_rules! decode_impl {
 }
 
 decode_impl!(u8);
+decode_impl!(u16);
 decode_impl!(u32);
 decode_impl!(i32);
 decode_impl!(f64);
@@ -304,6 +321,98 @@ macro_rules! encode_impl {
 }
 
 encode_impl!(u8);
+encode_impl!(u16);
 encode_impl!(u32);
 encode_impl!(i32);
 encode_impl!(f64);
+
+/// Edge fractions are sent as u16: 0 means "no fraction" (this is also what
+/// peers that do not send a fraction leave in the zeroed receive buffer),
+/// otherwise `1 + round(fraction * 65534)`.
+const EDGE_STEPS: f64 = 65534.0;
+
+fn encode_edge(buf: &mut &mut [u8], amt: &mut usize, edge: Option<f64>) {
+    let v = match edge {
+        Some(f) if f.is_finite() => 1 + (f.clamp(0.0, 1.0) * EDGE_STEPS).round() as u16,
+        _ => 0,
+    };
+    encode_u16(buf, amt, v);
+}
+
+fn decode_edge(data: &mut &[u8]) -> Result<Option<f64>, ProtocolError> {
+    Ok(match decode_u16(data)? {
+        0 => None,
+        v => Some((v - 1) as f64 / EDGE_STEPS),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roundtrip(event: ProtoEvent) -> ProtoEvent {
+        let (buf, _len): ([u8; MAX_EVENT_SIZE], usize) = event.into();
+        buf.try_into().unwrap()
+    }
+
+    #[test]
+    fn enter_roundtrip() {
+        for edge in [None, Some(0.0), Some(0.5), Some(1.0), Some(0.123)] {
+            match roundtrip(ProtoEvent::Enter(Position::Top, edge)) {
+                ProtoEvent::Enter(Position::Top, e) => match (edge, e) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => assert!((a - b).abs() < 1e-4),
+                    _ => panic!("edge mismatch: {edge:?} != {e:?}"),
+                },
+                e => panic!("unexpected event {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn leave_roundtrip() {
+        for edge in [None, Some(0.0), Some(0.5), Some(1.0), Some(0.987)] {
+            match roundtrip(ProtoEvent::Leave(42, edge)) {
+                ProtoEvent::Leave(42, e) => match (edge, e) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => assert!((a - b).abs() < 1e-4),
+                    _ => panic!("edge mismatch: {edge:?} != {e:?}"),
+                },
+                e => panic!("unexpected event {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn edge_extremes_are_exact() {
+        let ProtoEvent::Enter(_, Some(a)) = roundtrip(ProtoEvent::Enter(Position::Left, Some(0.0)))
+        else {
+            panic!()
+        };
+        let ProtoEvent::Enter(_, Some(b)) = roundtrip(ProtoEvent::Enter(Position::Left, Some(1.0)))
+        else {
+            panic!()
+        };
+        assert_eq!(a, 0.0);
+        assert_eq!(b, 1.0);
+    }
+
+    #[test]
+    fn old_peer_without_fraction() {
+        // old peers send Enter as 2 bytes, the rest of the zeroed buffer is read as "no fraction"
+        let mut buf = [0u8; MAX_EVENT_SIZE];
+        buf[0] = EventType::Enter as u8;
+        buf[1] = Position::Right as u8;
+        assert!(matches!(
+            buf.try_into().unwrap(),
+            ProtoEvent::Enter(Position::Right, None)
+        ));
+        // old Leave: type + u32 serial
+        let mut buf = [0u8; MAX_EVENT_SIZE];
+        buf[0] = EventType::Leave as u8;
+        assert!(matches!(
+            buf.try_into().unwrap(),
+            ProtoEvent::Leave(0, None)
+        ));
+    }
+}

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use bitflags::bitflags;
 use core_graphics::base::CGFloat;
 use core_graphics::display::{
-    CGDirectDisplayID, CGDisplayBounds, CGGetDisplaysWithRect, CGPoint, CGRect, CGSize,
+    CGDirectDisplayID, CGDisplay, CGDisplayBounds, CGGetDisplaysWithRect, CGPoint, CGRect, CGSize,
 };
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGKeyCode, CGMouseButton, EventField,
@@ -12,6 +12,7 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use input_event::{
     BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
+    edge::{Edge, Rect, edge_point},
     scancode,
 };
 use keycode::{KeyMap, KeyMapping};
@@ -27,6 +28,8 @@ use super::error::MacOSEmulationCreationError;
 const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const DEFAULT_REPEAT_INTERVAL: Duration = Duration::from_millis(32);
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+/// distance in pixels from the screen edge for warped cursor positions
+const WARP_INSET: f64 = 2.0;
 
 pub(crate) struct MacOSEmulation {
     /// global event source for all events
@@ -530,6 +533,33 @@ impl Emulation for MacOSEmulation {
     async fn destroy(&mut self, _handle: EmulationHandle) {}
 
     async fn terminate(&mut self) {}
+
+    async fn warp_to_edge(&mut self, edge: Edge, fraction: f64) {
+        let displays = match CGDisplay::active_displays() {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("failed to get active displays: {e}");
+                return;
+            }
+        };
+        let rects: Vec<Rect> = displays
+            .iter()
+            .map(|&d| {
+                let (x_min, y_min, x_max, y_max) = get_display_bounds(d);
+                Rect {
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                }
+            })
+            .collect();
+        if let Some((x, y)) = edge_point(&rects, edge, fraction, WARP_INSET) {
+            if let Err(e) = CGDisplay::warp_mouse_cursor_position(CGPoint { x, y }) {
+                log::warn!("failed to warp cursor to ({x}, {y}): {e}");
+            }
+        }
+    }
 }
 
 fn update_modifiers(modifiers: &Cell<XMods>, key: u32, state: u8) -> bool {

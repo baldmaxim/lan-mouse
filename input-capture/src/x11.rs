@@ -30,6 +30,11 @@ impl Capture for X11InputCapture {
     async fn terminate(&mut self) -> Result<(), CaptureError> {
         Ok(())
     }
+
+    async fn warp_to_edge(&mut self, _pos: Position, _fraction: f64) -> Result<(), CaptureError> {
+        // cursor cannot be repositioned with this backend
+        Ok(())
+    }
 }
 
 impl Stream for X11InputCapture {

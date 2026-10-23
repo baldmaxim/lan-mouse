@@ -24,8 +24,9 @@ pub(crate) struct Capture {
 }
 
 pub(crate) enum ICaptureEvent {
-    /// a client was entered
-    CaptureBegin(CaptureHandle),
+    /// a client was entered, with the fraction (0..1) along the edge
+    /// where the cursor crossed, if known
+    CaptureBegin(CaptureHandle, Option<f64>),
     /// capture disabled
     CaptureDisabled,
     /// capture disabled
@@ -81,6 +82,7 @@ impl Capture {
         let cancellation_token = CancellationToken::new();
         let capture_task = CaptureTask {
             active_client: None,
+            enter_edge: None,
             backend,
             cancellation_token: cancellation_token.clone(),
             captures: Default::default(),
@@ -165,6 +167,8 @@ macro_rules! debounce {
 
 struct CaptureTask {
     active_client: Option<CaptureHandle>,
+    /// fraction (0..1) along the edge where the cursor entered the active client
+    enter_edge: Option<f64>,
     backend: Option<input_capture::Backend>,
     cancellation_token: CancellationToken,
     captures: Vec<(CaptureHandle, Position, CaptureType)>,
@@ -293,9 +297,15 @@ impl CaptureTask {
                             self.state = State::Sending;
                         }
                         // client disconnected
-                        ProtoEvent::Leave(_) => {
+                        ProtoEvent::Leave(_, edge) => {
                             log::info!("releasing capture: left remote client device region");
+                            let active = self.active_client;
                             self.release_capture(capture).await?;
+                            // place the cursor at the same fraction along the edge
+                            // where it left the remote device
+                            if let (Some(active), Some(edge)) = (active, edge) {
+                                capture.warp_to_edge(active, edge).await?;
+                            }
                         },
                         _ => {}
                     }
@@ -344,9 +354,9 @@ impl CaptureTask {
             return self.release_capture(capture).await;
         }
 
-        if event == CaptureEvent::Begin {
+        if let CaptureEvent::Begin(edge) = event {
             self.event_tx
-                .send(ICaptureEvent::CaptureBegin(handle))
+                .send(ICaptureEvent::CaptureBegin(handle, edge))
                 .expect("channel closed");
         }
 
@@ -362,8 +372,12 @@ impl CaptureTask {
             return Ok(());
         }
 
+        if let CaptureEvent::Begin(edge) = event {
+            self.enter_edge = edge;
+        }
+
         // activated a new client
-        if event == CaptureEvent::Begin && Some(handle) != self.active_client {
+        if matches!(event, CaptureEvent::Begin(_)) && Some(handle) != self.active_client {
             self.state = State::WaitingForAck;
             self.active_client.replace(handle);
             self.event_tx
@@ -374,10 +388,10 @@ impl CaptureTask {
         let opposite_pos = to_proto_pos(self.get_pos(handle).opposite());
 
         let event = match event {
-            CaptureEvent::Begin => ProtoEvent::Enter(opposite_pos),
+            CaptureEvent::Begin(_) => ProtoEvent::Enter(opposite_pos, self.enter_edge),
             CaptureEvent::Input(e) => match self.state {
                 // connection not acknowledged, repeat `Enter` event
-                State::WaitingForAck => ProtoEvent::Enter(opposite_pos),
+                State::WaitingForAck => ProtoEvent::Enter(opposite_pos, self.enter_edge),
                 State::Sending => ProtoEvent::Input(e),
             },
         };
@@ -440,7 +454,7 @@ impl CaptureTask {
             }
 
             log::info!("sending Leave event to client {handle}");
-            if let Err(e) = self.conn.send(ProtoEvent::Leave(0), handle).await {
+            if let Err(e) = self.conn.send(ProtoEvent::Leave(0, None), handle).await {
                 log::warn!("failed to send Leave to client {handle}: {e}");
             }
         }

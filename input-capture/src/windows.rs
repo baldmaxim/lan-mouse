@@ -37,6 +37,11 @@ impl Capture for WindowsInputCapture {
     async fn terminate(&mut self) -> Result<(), CaptureError> {
         Ok(())
     }
+
+    async fn warp_to_edge(&mut self, pos: Position, fraction: f64) -> Result<(), CaptureError> {
+        self.event_thread.warp_to_edge(pos, fraction);
+        Ok(())
+    }
 }
 
 impl WindowsInputCapture {

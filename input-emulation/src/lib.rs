@@ -4,7 +4,7 @@ use std::{
     fmt::Display,
 };
 
-use input_event::{Event, KeyboardEvent};
+use input_event::{Event, KeyboardEvent, edge::Edge};
 
 pub use self::error::{EmulationCreationError, EmulationError, InputEmulationError};
 
@@ -204,6 +204,11 @@ impl InputEmulation {
         Ok(())
     }
 
+    /// move the cursor to the given fraction (0..1) along the given edge
+    pub async fn warp_to_edge(&mut self, edge: Edge, fraction: f64) {
+        self.emulation.warp_to_edge(edge, fraction).await
+    }
+
     pub fn has_pressed_keys(&self, handle: EmulationHandle) -> bool {
         self.pressed_keys
             .get(&handle)
@@ -237,4 +242,8 @@ trait Emulation: Send {
     async fn create(&mut self, handle: EmulationHandle);
     async fn destroy(&mut self, handle: EmulationHandle);
     async fn terminate(&mut self);
+    /// move the cursor to the given fraction (0..1) along the given edge,
+    /// relative to the union of all displays.
+    /// Backends that cannot reposition the cursor do nothing.
+    async fn warp_to_edge(&mut self, _edge: Edge, _fraction: f64) {}
 }

@@ -462,7 +462,7 @@ async fn do_capture_session(
                     current_pos.replace(Some(pos));
 
                     // client entered => send event
-                    event_tx.send((pos, CaptureEvent::Begin)).await.expect("no channel");
+                    event_tx.send((pos, CaptureEvent::Begin(None))).await.expect("no channel");
 
                     tokio::select! {
                         _ = notify_release.notified() => { /* capture release */
@@ -660,6 +660,11 @@ impl LanMouseInputCapture for LibeiInputCapture {
         self.terminated = true;
         log::debug!("done!");
         res
+    }
+
+    async fn warp_to_edge(&mut self, _pos: Position, _fraction: f64) -> Result<(), CaptureError> {
+        // cursor cannot be repositioned with this backend
+        Ok(())
     }
 }
 

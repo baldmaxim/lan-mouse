@@ -49,6 +49,11 @@ impl Capture for DummyInputCapture {
     async fn terminate(&mut self) -> Result<(), CaptureError> {
         Ok(())
     }
+
+    async fn warp_to_edge(&mut self, _pos: Position, _fraction: f64) -> Result<(), CaptureError> {
+        // cursor cannot be repositioned with this backend
+        Ok(())
+    }
 }
 
 const FREQUENCY_HZ: f64 = 1.0;
@@ -62,7 +67,7 @@ impl Stream for DummyInputCapture {
         let event = match self.start {
             None => {
                 self.start.replace(current);
-                CaptureEvent::Begin
+                CaptureEvent::Begin(None)
             }
             Some(start) => {
                 let elapsed = start.elapsed();

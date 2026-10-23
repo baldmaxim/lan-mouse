@@ -20,21 +20,27 @@ use windows::core::{PCWSTR, w};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DispatchMessageW, EDD_GET_DEVICE_INTERFACE_NAME, GetMessageW,
     HOOKPROC, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW,
-    RegisterClassW, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_STYLE,
-    WM_DISPLAYCHANGE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WNDPROC,
+    RegisterClassW, SetCursorPos, SetWindowsHookExW, TranslateMessage, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WINDOW_STYLE, WM_DISPLAYCHANGE, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW,
+    WNDPROC,
 };
 
 use input_event::{
     BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
+    edge::{Edge, Rect, edge_fraction, edge_point},
     scancode::{self, Linux},
 };
 
 use super::{CaptureEvent, Position, display_util};
 
+/// distance in pixels from the screen edge for warped cursor positions
+const WARP_INSET: f64 = 2.0;
+
 pub(crate) struct EventThread {
     request_buffer: Arc<Mutex<Vec<ClientUpdate>>>,
+    warp_buffer: Arc<Mutex<Option<(Position, f64)>>>,
     thread: Option<thread::JoinHandle<()>>,
     thread_id: u32,
 }
@@ -42,9 +48,15 @@ pub(crate) struct EventThread {
 impl EventThread {
     pub(crate) fn new(event_tx: Sender<(Position, CaptureEvent)>) -> Self {
         let request_buffer = Default::default();
-        let (thread, thread_id) = start(event_tx, Arc::clone(&request_buffer));
+        let warp_buffer = Default::default();
+        let (thread, thread_id) = start(
+            event_tx,
+            Arc::clone(&request_buffer),
+            Arc::clone(&warp_buffer),
+        );
         Self {
             request_buffer,
+            warp_buffer,
             thread: Some(thread),
             thread_id,
         }
@@ -52,6 +64,13 @@ impl EventThread {
 
     pub(crate) fn release_capture(&self) {
         self.signal(RequestType::Release);
+    }
+
+    /// move the cursor to the given fraction along the edge at `pos`
+    /// (to be called after [`Self::release_capture`], the message order is preserved)
+    pub(crate) fn warp_to_edge(&self, pos: Position, fraction: f64) {
+        *self.warp_buffer.lock().unwrap() = Some((pos, fraction));
+        self.signal(RequestType::Warp);
     }
 
     pub(crate) fn create(&self, pos: Position) {
@@ -91,6 +110,7 @@ enum RequestType {
     ClientUpdate = 0,
     Release = 1,
     Exit = 2,
+    Warp = 3,
 }
 
 enum ClientUpdate {
@@ -139,12 +159,14 @@ fn get_msg() -> Option<MSG> {
 fn start(
     event_tx: Sender<(Position, CaptureEvent)>,
     request_buffer: Arc<Mutex<Vec<ClientUpdate>>>,
+    warp_buffer: Arc<Mutex<Option<(Position, f64)>>>,
 ) -> (thread::JoinHandle<()>, u32) {
     /* condition variable to wait for thead id */
     let thread_id = Arc::new((Condvar::new(), Mutex::new(None)));
     let thread_id_ = Arc::clone(&thread_id);
 
-    let msg_thread = thread::spawn(|| start_routine(thread_id_, event_tx, request_buffer));
+    let msg_thread =
+        thread::spawn(|| start_routine(thread_id_, event_tx, request_buffer, warp_buffer));
 
     /* wait for thread to set its id */
     let (cond, thread_id) = &*thread_id;
@@ -159,6 +181,7 @@ fn start_routine(
     ready: Arc<(Condvar, Mutex<Option<u32>>)>,
     event_tx: Sender<(Position, CaptureEvent)>,
     request_buffer: Arc<Mutex<Vec<ClientUpdate>>>,
+    warp_buffer: Arc<Mutex<Option<(Position, f64)>>>,
 ) {
     EVENT_TX.replace(Some(event_tx));
     /* communicate thread id */
@@ -231,6 +254,12 @@ fn start_routine(
                 x if x == RequestType::Release as usize => {
                     ACTIVE_CLIENT.take();
                 }
+                x if x == RequestType::Warp as usize => {
+                    let warp = warp_buffer.lock().unwrap().take();
+                    if let Some((pos, fraction)) = warp {
+                        warp_cursor(pos, fraction);
+                    }
+                }
                 x if x == RequestType::ClientUpdate as usize => {
                     let requests = {
                         let mut res = vec![];
@@ -255,6 +284,42 @@ fn start_routine(
             }
         }
     }
+}
+
+fn to_rect(r: &RECT) -> Rect {
+    Rect {
+        x_min: r.left as f64,
+        y_min: r.top as f64,
+        x_max: r.right as f64,
+        y_max: r.bottom as f64,
+    }
+}
+
+fn to_edge(pos: Position) -> Edge {
+    match pos {
+        Position::Left => Edge::Left,
+        Position::Right => Edge::Right,
+        Position::Top => Edge::Top,
+        Position::Bottom => Edge::Bottom,
+    }
+}
+
+/// move the cursor to the given fraction along the edge at `pos`
+fn warp_cursor(pos: Position, fraction: f64) {
+    let rects: Vec<Rect> = DISPLAYS.with_borrow_mut(|(displays, generation)| {
+        update_display_regions(displays, generation);
+        displays.iter().map(to_rect).collect()
+    });
+    let Some((x, y)) = edge_point(&rects, to_edge(pos), fraction, WARP_INSET) else {
+        return;
+    };
+    let (x, y) = (x.round() as i32, y.round() as i32);
+    if let Err(e) = unsafe { SetCursorPos(x, y) } {
+        log::warn!("SetCursorPos({x}, {y}) failed: {e}");
+        return;
+    }
+    /* the move must not be treated as movement from the old position */
+    PREV_POS.replace(Some((x, y)));
 }
 
 fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
@@ -299,7 +364,15 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
     /* notify main thread */
     log::debug!("ENTERED @ {prev_pos:?} -> {curr_pos:?}");
     let active = ACTIVE_CLIENT.get().expect("active client");
-    blocking_send_event(active, CaptureEvent::Begin);
+    let fraction = DISPLAYS.with_borrow(|(displays, _)| {
+        let rects: Vec<Rect> = displays.iter().map(to_rect).collect();
+        edge_fraction(
+            &rects,
+            to_edge(active),
+            (entry_point.0 as f64, entry_point.1 as f64),
+        )
+    });
+    blocking_send_event(active, CaptureEvent::Begin(fraction));
 
     ret
 }

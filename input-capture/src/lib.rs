@@ -38,7 +38,8 @@ pub type CaptureHandle = u64;
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum CaptureEvent {
     /// capture on this capture handle is now active
-    Begin,
+    /// the optional fraction (0..1) is the position along the edge the cursor crossed at
+    Begin(Option<f64>),
     /// input event coming from capture handle
     Input(Event),
 }
@@ -46,7 +47,8 @@ pub enum CaptureEvent {
 impl Display for CaptureEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CaptureEvent::Begin => write!(f, "begin capture"),
+            CaptureEvent::Begin(None) => write!(f, "begin capture"),
+            CaptureEvent::Begin(Some(e)) => write!(f, "begin capture @ {e:.3}"),
             CaptureEvent::Input(e) => write!(f, "{e}"),
         }
     }
@@ -171,6 +173,19 @@ impl InputCapture {
         self.capture.release().await
     }
 
+    /// move the cursor to the given fraction (0..1) along the edge of the
+    /// capture handle's position, after a release
+    pub async fn warp_to_edge(
+        &mut self,
+        handle: CaptureHandle,
+        fraction: f64,
+    ) -> Result<(), CaptureError> {
+        match self.id_map.get(&handle) {
+            Some(&pos) => self.capture.warp_to_edge(pos, fraction).await,
+            None => Ok(()),
+        }
+    }
+
     /// Drain and return every key the capture has forwarded as
     /// down-but-not-up. The caller is expected to synthesize key-up
     /// events to the remote peer for each — otherwise the peer
@@ -289,6 +304,13 @@ trait Capture: Stream<Item = Result<(Position, CaptureEvent), CaptureError>> + U
 
     /// destroy the input capture
     async fn terminate(&mut self) -> Result<(), CaptureError>;
+
+    /// move the cursor to the given fraction (0..1) along the edge at `pos`
+    /// (the edge where the cursor left the screen), after a release.
+    /// Backends that cannot reposition the cursor do nothing.
+    /// (No default body: `async_trait` default methods require `Self: Send`,
+    /// which `dyn Capture` does not implement.)
+    async fn warp_to_edge(&mut self, pos: Position, fraction: f64) -> Result<(), CaptureError>;
 }
 
 async fn create_backend(

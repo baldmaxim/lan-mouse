@@ -1,6 +1,7 @@
 use super::error::{EmulationError, WindowsEmulationCreationError};
 use input_event::{
     BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, Event, KeyboardEvent, PointerEvent,
+    edge::{Edge, Rect, edge_point},
     scancode,
 };
 
@@ -8,6 +9,10 @@ use async_trait::async_trait;
 use std::ops::BitOrAssign;
 use std::time::Duration;
 use tokio::task::AbortHandle;
+use windows::Win32::Foundation::{LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
     MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
@@ -17,12 +22,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT_0, KEYEVENTF_EXTENDEDKEY, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, SendInput,
 };
-use windows::Win32::UI::WindowsAndMessaging::{XBUTTON1, XBUTTON2};
+use windows::Win32::UI::WindowsAndMessaging::{SetCursorPos, XBUTTON1, XBUTTON2};
+use windows::core::BOOL;
 
 use super::{Emulation, EmulationHandle};
 
 const DEFAULT_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const DEFAULT_REPEAT_INTERVAL: Duration = Duration::from_millis(32);
+/// distance in pixels from the screen edge for warped cursor positions
+const WARP_INSET: f64 = 2.0;
 
 pub(crate) struct WindowsEmulation {
     repeat_task: Option<AbortHandle>,
@@ -80,6 +88,57 @@ impl Emulation for WindowsEmulation {
     async fn destroy(&mut self, _handle: EmulationHandle) {}
 
     async fn terminate(&mut self) {}
+
+    async fn warp_to_edge(&mut self, edge: Edge, fraction: f64) {
+        let rects = monitor_rects();
+        let Some((x, y)) = edge_point(&rects, edge, fraction, WARP_INSET) else {
+            return;
+        };
+        let (x, y) = (x.round() as i32, y.round() as i32);
+        if let Err(e) = unsafe { SetCursorPos(x, y) } {
+            log::warn!("SetCursorPos({x}, {y}) failed: {e}");
+        }
+    }
+}
+
+unsafe extern "system" fn monitor_enum_proc(
+    monitor: HMONITOR,
+    _: HDC,
+    _: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let rects = &mut *(data.0 as *mut Vec<Rect>);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetMonitorInfoW(monitor, &mut info).as_bool() {
+        let r = info.rcMonitor;
+        rects.push(Rect {
+            x_min: r.left as f64,
+            y_min: r.top as f64,
+            x_max: r.right as f64,
+            y_max: r.bottom as f64,
+        });
+    }
+    BOOL::from(true)
+}
+
+/// rectangles of all monitors in virtual screen coordinates
+fn monitor_rects() -> Vec<Rect> {
+    let mut rects: Vec<Rect> = Vec::new();
+    unsafe {
+        let ret = EnumDisplayMonitors(
+            None,
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(&mut rects as *mut Vec<Rect> as isize),
+        );
+        if !ret.as_bool() {
+            log::warn!("EnumDisplayMonitors failed");
+        }
+    }
+    rects
 }
 
 impl WindowsEmulation {
