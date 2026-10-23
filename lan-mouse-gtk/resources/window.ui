@@ -30,6 +30,35 @@
           </object>
         </child>
         <child>
+          <object class="GtkRevealer" id="update_revealer">
+            <property name="transition-type">slide-down</property>
+            <property name="reveal-child">false</property>
+            <child>
+              <object class="GtkBox">
+                <property name="spacing">12</property>
+                <style>
+                  <class name="update-banner"/>
+                </style>
+                <child>
+                  <object class="GtkLabel" id="update_label">
+                    <property name="hexpand">true</property>
+                    <property name="xalign">0</property>
+                    <property name="wrap">true</property>
+                    <property name="valign">center</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkButton" id="update_button">
+                    <property name="label" translatable="yes">Update</property>
+                    <property name="valign">center</property>
+                    <signal name="clicked" handler="handle_update" swapped="true"/>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
           <object class="AdwToastOverlay" id="toast_overlay">
             <child>
               <object class="AdwStatusPage">
@@ -179,6 +208,19 @@
                                 <property name="visible">false</property>
                                 <property name="name">port-edit-cancel</property>
                                 <style><class name="error"/></style>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwActionRow" id="update_check_row">
+                            <property name="title">version</property>
+                            <property name="icon-name">object-rotate-right-symbolic</property>
+                            <child>
+                              <object class="GtkButton" id="update_check_button">
+                                <property name="label" translatable="yes">Check for updates</property>
+                                <property name="valign">center</property>
+                                <signal name="clicked" handler="handle_check_updates" swapped="true"/>
                               </object>
                             </child>
                           </object>

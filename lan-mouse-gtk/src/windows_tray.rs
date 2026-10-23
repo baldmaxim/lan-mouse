@@ -12,6 +12,7 @@ use crate::{
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const TOOLTIP: &str = "Lan Mouse";
 
 fn show(window: &Window) {
     window.set_visible(true);
@@ -51,14 +52,31 @@ pub fn setup(app: &adw::Application, window: &Window) -> bool {
     let hold = app.hold();
     let window = window.downgrade();
     let app = app.downgrade();
+    let mut tooltip = TOOLTIP.to_string();
     // the closure owns the tray and the hold for the lifetime of the app
     glib::timeout_add_local(POLL_INTERVAL, move || {
         let _ = &hold;
+        // tooltip announces a pending update (the window is not shown for it)
+        let wanted = match window.upgrade().and_then(|w| w.available_update_version()) {
+            Some(version) => format!("{TOOLTIP} \u{2014} update {version} available"),
+            None => TOOLTIP.to_string(),
+        };
+        if wanted != tooltip {
+            tray.set_tooltip(&wanted);
+            tooltip = wanted;
+        }
         for action in tray.poll() {
             match action {
                 TrayAction::Show => {
                     if let Some(window) = window.upgrade() {
                         show(&window);
+                    }
+                }
+                TrayAction::CheckUpdates => {
+                    // the result is a toast, so make the window visible
+                    if let Some(window) = window.upgrade() {
+                        show(&window);
+                        window.check_for_updates(true);
                     }
                 }
                 TrayAction::Quit => {

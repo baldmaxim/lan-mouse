@@ -1,17 +1,14 @@
 name: "Release"
-run-name: "Release - ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || github.event.inputs.name || github.ref_name }}"
+run-name: "Release - ${{ github.ref_name }}"
 
+# Artifacts are built on every push to the listed branches and on tags.
+# A GitHub Release is published only for tags vX.Y.Z (see the `release` job).
 on:
   push:
     branches: [ "main", "clipboard-macos" ]
     tags:
       - v**
   workflow_dispatch:
-    inputs:
-      name:
-        description: 'Development release name'
-        required: false
-        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -118,11 +115,37 @@ jobs:
         Copy-Item -Path "target\release\lan-mouse.exe" -Destination "lan-mouse-windows"
         Copy-Item -Path "build-aux\windows\install.cmd", "build-aux\windows\install.ps1", "build-aux\windows\uninstall.ps1" -Destination "lan-mouse-windows"
         Compress-Archive -Path "lan-mouse-windows\*" -DestinationPath lan-mouse-windows-x86_64.zip
+    - name: Get version
+      id: version
+      run: |
+        $m = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+        $version = $m.Matches[0].Groups[1].Value
+        if (-not $version) { throw "version not found in Cargo.toml" }
+        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+    - name: Build installer (Inno Setup)
+      run: |
+        $candidates = @(
+          "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+          "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+          "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        )
+        $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+        if (-not $iscc) { $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1 }
+        if (-not $iscc) {
+          choco install innosetup -y --no-progress
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+        if (-not $iscc) { throw "ISCC.exe not found" }
+        & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "build-aux\windows\lan-mouse.iss"
+        if ($LASTEXITCODE -ne 0) { throw "iscc failed with exit code $LASTEXITCODE" }
+        Get-ChildItem "LanMouse-Setup-*.exe"
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
       with:
         name: lan-mouse-windows-x86_64
-        path: lan-mouse-windows-x86_64.zip
+        path: |
+          lan-mouse-windows-x86_64.zip
+          LanMouse-Setup-*.exe
 
   macos-release-build:
     runs-on: macos-15-intel
@@ -147,7 +170,8 @@ jobs:
     - name: Zip bundle
       run: |
         cd target/release/bundle/osx
-        zip -r "lan-mouse-macos-intel.zip" "Lan Mouse.app"
+        # ditto keeps symlinks and attributes of the bundle; "Lan Mouse.app" ends up at the top level
+        ditto -c -k --keepParent "Lan Mouse.app" "lan-mouse-macos-intel.zip"
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
       with:
@@ -177,7 +201,8 @@ jobs:
     - name: Zip bundle
       run: |
         cd target/release/bundle/osx
-        zip -r "lan-mouse-macos-arm64.zip" "Lan Mouse.app"
+        # ditto keeps symlinks and attributes of the bundle; "Lan Mouse.app" ends up at the top level
+        ditto -c -k --keepParent "Lan Mouse.app" "lan-mouse-macos-arm64.zip"
     - name: Upload build artifact
       uses: actions/upload-artifact@v6
       with:
@@ -186,47 +211,71 @@ jobs:
 
   release:
     name: "Release"
+    # only tags vX.Y.Z publish a release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [windows-release-build, linux-release-build, linux-arm64-release-build, macos-release-build, macos-arm64-release-build]
     runs-on: "ubuntu-latest"
+    permissions:
+      contents: write
     steps:
+    - uses: actions/checkout@v6
     - name: Download build artifacts
       uses: actions/download-artifact@v4
-    - name: Get short SHA
-      id: vars
-      run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-    - name: Create Pre-Release
-      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    - name: Check version against the tag
+      id: version
+      run: |
+        TAG_VERSION="${GITHUB_REF_NAME#v}"
+        CARGO_VERSION="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+        if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+          echo "::error::tag $GITHUB_REF_NAME does not match version $CARGO_VERSION in Cargo.toml"
+          exit 1
+        fi
+        echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+    - name: Generate latest.json
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        set -euo pipefail
+        WIN="lan-mouse-windows-x86_64/LanMouse-Setup-${VERSION}.exe"
+        ARM="lan-mouse-macos-arm64/lan-mouse-macos-arm64.zip"
+        INTEL="lan-mouse-macos-intel/lan-mouse-macos-intel.zip"
+        for f in "$WIN" "$ARM" "$INTEL"; do
+          test -f "$f" || { echo "::error::missing release asset $f"; exit 1; }
+        done
+        BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+        jq -n \
+          --arg version "$VERSION" \
+          --arg notes "https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}" \
+          --arg win_url "$BASE/$(basename "$WIN")" --arg win_sha "$(sha256sum "$WIN" | cut -d' ' -f1)" \
+          --arg arm_url "$BASE/$(basename "$ARM")" --arg arm_sha "$(sha256sum "$ARM" | cut -d' ' -f1)" \
+          --arg intel_url "$BASE/$(basename "$INTEL")" --arg intel_sha "$(sha256sum "$INTEL" | cut -d' ' -f1)" \
+          '{
+            version: $version,
+            notes_url: $notes,
+            assets: {
+              "windows-x86_64": {url: $win_url, sha256: $win_sha},
+              "macos-aarch64": {url: $arm_url, sha256: $arm_sha},
+              "macos-x86_64": {url: $intel_url, sha256: $intel_sha}
+            }
+          }' > latest.json
+        cat latest.json
+    - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        tag_name: ${{ format('{0}-{1}', github.event.inputs.name || github.ref_name, steps.vars.outputs.short_sha) }}
-        name: ${{ format('{0}-{1}', github.event.inputs.name || github.ref_name, steps.vars.outputs.short_sha) }}
-        prerelease: true
-        generate_release_notes: true
-        files: |
-          lan-mouse-linux-x86_64/lan-mouse-linux-x86_64
-          lan-mouse-linux-x86_64/target/release/bundle/deb/lan-mouse_*.deb
-          lan-mouse-linux-x86_64/target/release/bundle/appimage/lan-mouse_*.AppImage
-          lan-mouse-linux-arm64/lan-mouse-linux-arm64
-          lan-mouse-linux-arm64/target/release/bundle/deb/lan-mouse_*.deb
-          lan-mouse-linux-arm64/target/release/bundle/appimage/lan-mouse_*.AppImage
-          lan-mouse-macos-intel/lan-mouse-macos-intel.zip
-          lan-mouse-macos-arm64/lan-mouse-macos-arm64.zip
-          lan-mouse-windows-x86_64/lan-mouse-windows-x86_64.zip
-    - name: Create Tagged Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v2
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
+        prerelease: false
         generate_release_notes: true
         files: |
+          latest.json
+          lan-mouse-windows-x86_64/LanMouse-Setup-*.exe
+          lan-mouse-windows-x86_64/lan-mouse-windows-x86_64.zip
+          lan-mouse-macos-arm64/lan-mouse-macos-arm64.zip
+          lan-mouse-macos-intel/lan-mouse-macos-intel.zip
           lan-mouse-linux-x86_64/lan-mouse-linux-x86_64
           lan-mouse-linux-x86_64/target/release/bundle/deb/lan-mouse_*.deb
           lan-mouse-linux-x86_64/target/release/bundle/appimage/lan-mouse_*.AppImage
           lan-mouse-linux-arm64/lan-mouse-linux-arm64
           lan-mouse-linux-arm64/target/release/bundle/deb/lan-mouse_*.deb
           lan-mouse-linux-arm64/target/release/bundle/appimage/lan-mouse_*.AppImage
-          lan-mouse-macos-intel/lan-mouse-macos-intel.zip
-          lan-mouse-macos-arm64/lan-mouse-macos-arm64.zip
-          lan-mouse-windows-x86_64/lan-mouse-windows-x86_64.zip

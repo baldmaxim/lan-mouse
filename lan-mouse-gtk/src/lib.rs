@@ -8,6 +8,7 @@ mod key_row;
 mod macos_privacy;
 #[cfg(target_os = "macos")]
 mod macos_status_item;
+mod updater;
 mod window;
 #[cfg(target_os = "windows")]
 mod windows_single_instance;
@@ -26,6 +27,15 @@ use window::Window;
 /// peer's [`lan_mouse_ipc::ClientState::peer_commit`] for the
 /// soft-warn version-mismatch indicator.
 pub(crate) static LOCAL_COMMIT: OnceLock<[u8; 8]> = OnceLock::new();
+
+/// Version of the application (the `lan-mouse` crate), set once by [`run`].
+/// Single source of truth for update checks and the UI.
+static APP_VERSION: OnceLock<&'static str> = OnceLock::new();
+
+/// The running application's version, e.g. "0.12.0".
+pub(crate) fn app_version() -> &'static str {
+    APP_VERSION.get().copied().unwrap_or("0.0.0")
+}
 
 /// Convenience: returns the local commit as an 8-char ASCII string,
 /// or a placeholder if unset (which would indicate a programmer
@@ -56,8 +66,9 @@ pub enum GtkError {
 }
 
 /// Runs the GTK frontend. With `hidden` the main window is created but
-/// not presented (tray / menu bar only, e.g. for autostart).
-pub fn run(local_commit: [u8; 8], hidden: bool) -> Result<(), GtkError> {
+/// not presented (tray / menu bar only, e.g. for autostart). `version` is the
+/// application version (`CARGO_PKG_VERSION` of the `lan-mouse` crate).
+pub fn run(local_commit: [u8; 8], hidden: bool, version: &'static str) -> Result<(), GtkError> {
     log::debug!("running gtk frontend");
 
     // a frontend is already running (in the tray): ask it to show its window
@@ -70,6 +81,7 @@ pub fn run(local_commit: [u8; 8], hidden: bool) -> Result<(), GtkError> {
     LOCAL_COMMIT
         .set(local_commit)
         .expect("local_commit set once");
+    APP_VERSION.set(version).expect("version set once");
 
     #[cfg(windows)]
     let ret = std::thread::Builder::new()
@@ -262,6 +274,7 @@ fn build_ui(app: &Application, hidden: bool) {
     });
 
     let window = Window::new(app, frontend_tx);
+    window.start_update_checks();
     #[cfg(target_os = "macos")]
     {
         window.connect_close_request(|window| {

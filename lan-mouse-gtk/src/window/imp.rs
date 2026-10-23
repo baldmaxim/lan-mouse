@@ -5,11 +5,11 @@ use adw::subclass::prelude::*;
 use adw::{ActionRow, PreferencesGroup, ToastOverlay, prelude::*};
 use glib::subclass::InitializingObject;
 use gtk::glib::clone;
-use gtk::{Button, CompositeTemplate, Entry, Image, Label, ListBox, gdk, gio, glib};
+use gtk::{Button, CompositeTemplate, Entry, Image, Label, ListBox, Revealer, gdk, gio, glib};
 
 use lan_mouse_ipc::{DEFAULT_PORT, DiscoveredDevice, FrontendRequestWriter};
 
-use crate::authorization_window::AuthorizationWindow;
+use crate::{authorization_window::AuthorizationWindow, updater::UpdateInfo};
 
 #[derive(CompositeTemplate, Default)]
 #[template(resource = "/de/feschber/LanMouse/window.ui")]
@@ -50,6 +50,16 @@ pub struct Window {
     pub input_capture_button: TemplateChild<Button>,
     #[template_child]
     pub authorized_list: TemplateChild<ListBox>,
+    #[template_child]
+    pub update_revealer: TemplateChild<Revealer>,
+    #[template_child]
+    pub update_label: TemplateChild<Label>,
+    #[template_child]
+    pub update_button: TemplateChild<Button>,
+    #[template_child]
+    pub update_check_row: TemplateChild<ActionRow>,
+    #[template_child]
+    pub update_check_button: TemplateChild<Button>,
     pub clients: RefCell<Option<gio::ListStore>>,
     pub authorized: RefCell<Option<gio::ListStore>>,
     /// all devices found on the network
@@ -62,6 +72,10 @@ pub struct Window {
     pub emulation_active: Cell<bool>,
     pub authorization_window: RefCell<Option<AuthorizationWindow>>,
     pub active_transfers: RefCell<HashMap<u64, adw::Toast>>,
+    /// newest release found by the update check (if newer than this build)
+    pub update_info: RefCell<Option<UpdateInfo>>,
+    /// an update check or download is running
+    pub update_busy: Cell<bool>,
 }
 
 #[glib::object_subclass]
@@ -182,6 +196,16 @@ impl Window {
     }
 
     #[template_callback]
+    fn handle_update(&self) {
+        self.obj().start_update();
+    }
+
+    #[template_callback]
+    fn handle_check_updates(&self) {
+        self.obj().check_for_updates(true);
+    }
+
+    #[template_callback]
     fn handle_add_cert_fingerprint(&self, _button: &Button) {
         self.obj().open_fingerprint_dialog(None, None);
     }
@@ -211,6 +235,7 @@ impl ObjectImpl for Window {
         obj.setup_clients();
         obj.setup_authorized();
         obj.refresh_discovered();
+        obj.setup_update_ui();
     }
 }
 

@@ -10,3 +10,9 @@
 .peer-unknown > box > list .subtitle {
     color: @warning_color;
 }
+
+.update-banner {
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    padding: 6px 12px;
+}
