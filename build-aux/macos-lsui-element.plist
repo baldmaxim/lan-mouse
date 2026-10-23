@@ -6,3 +6,9 @@
   <string>Lan Mouse needs Input Monitoring access to capture keyboard and mouse input and forward it to remote machines on your network.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Lan Mouse uses Apple Events to deliver synthesized keyboard and mouse events to the system.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Lan Mouse discovers other computers running Lan Mouse on your local network.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_lan-mouse._udp</string>
+  </array>

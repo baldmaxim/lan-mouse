@@ -4,14 +4,15 @@ use crate::{
     config::{Config, ConfigClient},
     connect::LanMouseConnection,
     crypto,
+    discovery::Discovery,
     dns::{DnsEvent, DnsResolver},
     emulation::{Emulation, EmulationEvent},
     listen::{LanMouseListener, ListenerCreationError},
 };
 use futures::StreamExt;
 use lan_mouse_ipc::{
-    AsyncFrontendListener, ClientHandle, FrontendEvent, FrontendRequest, IpcError,
-    IpcListenerCreationError, Position, Status,
+    AsyncFrontendListener, ClientHandle, DiscoveredDevice, FrontendEvent, FrontendRequest,
+    IpcError, IpcListenerCreationError, Position, Status,
 };
 use log;
 use std::{
@@ -44,6 +45,8 @@ pub struct Service {
     emulation: Emulation,
     /// dns resolver
     resolver: DnsResolver,
+    /// discovery of other lan-mouse devices via mDNS
+    discovery: Discovery,
     /// frontend listener
     frontend_listener: AsyncFrontendListener,
     /// authorized public key sha256 fingerprints
@@ -115,6 +118,7 @@ impl Service {
         let resolver = DnsResolver::new()?;
 
         let port = config.port();
+        let discovery = Discovery::new(port, public_key_fingerprint.clone());
         crate::clipboard::init_clipboard_task();
 
         let service = Self {
@@ -123,6 +127,7 @@ impl Service {
             emulation,
             frontend_listener,
             resolver,
+            discovery,
             authorized_keys,
             public_key_fingerprint,
             client_manager,
@@ -160,6 +165,9 @@ impl Service {
                 event = self.emulation.event() => self.handle_emulation_event(event),
                 event = self.capture.event() => self.handle_capture_event(event),
                 event = self.resolver.event() => self.handle_resolver_event(event),
+                devices = self.discovery.changed() => {
+                    self.notify_frontend(FrontendEvent::DiscoveredDevices(devices))
+                }
                 Ok(event) = transfer_events.recv() => self.notify_frontend(event),
                 _ = self.config.changed() => self.handle_config_change(),
                 r = signal::ctrl_c() => break r.expect("failed to wait for CTRL+C"),
@@ -173,6 +181,8 @@ impl Service {
         self.emulation.terminate().await;
         log::debug!("terminating dns resolver ...");
         self.resolver.terminate().await;
+        log::debug!("terminating discovery ...");
+        self.discovery.terminate().await;
 
         Ok(())
     }
@@ -232,6 +242,10 @@ impl Service {
                 self.update_leave_hook(handle, leave_hook)
             }
             FrontendRequest::SaveConfiguration => self.save_config(),
+            FrontendRequest::AddDiscovered { device, position } => {
+                self.add_discovered(device, position);
+                self.save_config();
+            }
         }
     }
 
@@ -332,6 +346,7 @@ impl Service {
             EmulationEvent::PortChanged(port) => match port {
                 Ok(port) => {
                     self.port = port;
+                    self.discovery.set_port(port);
                     self.notify_frontend(FrontendEvent::PortChanged(port, None));
                 }
                 Err(e) => self
@@ -515,13 +530,27 @@ impl Service {
     fn enumerate(&mut self) {
         let clients = self.client_manager.get_client_states();
         self.notify_frontend(FrontendEvent::Enumerate(clients));
+        let devices = self.discovery.devices();
+        self.notify_frontend(FrontendEvent::DiscoveredDevices(devices));
     }
 
-    fn add_client(&mut self) {
+    /// add a discovered device as active client and authorize its fingerprint
+    fn add_discovered(&mut self, device: DiscoveredDevice, position: Position) {
+        let handle = self.add_client();
+        self.update_hostname(handle, Some(device.hostname.clone()));
+        self.update_fix_ips(handle, device.ips);
+        self.update_port(handle, device.port);
+        self.update_pos(handle, position);
+        self.activate_client(handle);
+        self.add_authorized_key(device.hostname, device.fingerprint);
+    }
+
+    fn add_client(&mut self) -> ClientHandle {
         let handle = self.client_manager.add_client();
         log::info!("added client {handle}");
         let (c, s) = self.client_manager.get_state(handle).unwrap();
         self.notify_frontend(FrontendEvent::Created(handle, c, s));
+        handle
     }
 
     fn set_client_active(&mut self, handle: ClientHandle, active: bool) {

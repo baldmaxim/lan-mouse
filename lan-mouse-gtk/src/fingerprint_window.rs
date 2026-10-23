@@ -11,8 +11,11 @@ glib::wrapper! {
 }
 
 impl FingerprintWindow {
-    pub(crate) fn new(fingerprint: Option<String>) -> Self {
+    pub(crate) fn new(fingerprint: Option<String>, description: Option<String>) -> Self {
         let window: Self = Object::builder().build();
+        if let Some(description) = description {
+            window.imp().description.set_property("text", description);
+        }
         if let Some(fp) = fingerprint {
             window.imp().fingerprint.set_property("text", fp);
             window.imp().fingerprint.set_property("editable", false);

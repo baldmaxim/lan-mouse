@@ -11,8 +11,8 @@ use gtk::{
 };
 
 use lan_mouse_ipc::{
-    ClientConfig, ClientHandle, ClientState, DEFAULT_PORT, FrontendRequest, FrontendRequestWriter,
-    Position,
+    ClientConfig, ClientHandle, ClientState, DEFAULT_PORT, DiscoveredDevice, FrontendRequest,
+    FrontendRequestWriter, Position,
 };
 
 use crate::{
@@ -269,6 +269,104 @@ impl Window {
         });
     }
 
+    /// whether a client for the discovered device is already configured
+    fn is_configured(&self, device: &DiscoveredDevice) -> bool {
+        self.clients().iter::<ClientObject>().flatten().any(|c| {
+            let client = c.get_data();
+            client
+                .hostname
+                .is_some_and(|h| h.eq_ignore_ascii_case(&device.hostname))
+                || device
+                    .ips
+                    .iter()
+                    .any(|ip| client.ips.contains(&ip.to_string()))
+        })
+    }
+
+    pub(super) fn set_discovered_devices(&self, devices: Vec<DiscoveredDevice>) {
+        self.imp().discovered.replace(devices);
+        self.refresh_discovered();
+    }
+
+    /// rebuilds the list of devices that can be added (not yet configured as client)
+    fn refresh_discovered(&self) {
+        let devices = self
+            .imp()
+            .discovered
+            .borrow()
+            .iter()
+            .filter(|d| !self.is_configured(d))
+            .cloned()
+            .collect::<Vec<_>>();
+        // keep open popovers alive if nothing changed
+        if *self.imp().discovered_shown.borrow() == devices {
+            return;
+        }
+        let list = self.imp().discovered_list.get();
+        while let Some(row) = list.first_child() {
+            list.remove(&row);
+        }
+        for device in &devices {
+            list.append(&self.create_discovered_row(device));
+        }
+        // see `update_placeholder_visibility`
+        let placeholder = self.imp().discovered_placeholder.get();
+        list.set_placeholder(match devices.is_empty() {
+            true => Some(&placeholder),
+            false => None,
+        });
+        self.imp().discovered_shown.replace(devices);
+    }
+
+    fn create_discovered_row(&self, device: &DiscoveredDevice) -> adw::ActionRow {
+        let ip = device
+            .ips
+            .first()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let fingerprint = device.fingerprint.chars().take(8).collect::<String>();
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(&device.hostname))
+            .subtitle(glib::markup_escape_text(&format!("{ip}  ·  {fingerprint}")))
+            .build();
+
+        let menu = gtk::MenuButton::builder()
+            .label("Add")
+            .valign(gtk::Align::Center)
+            .build();
+        let popover = gtk::Popover::new();
+        let positions = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for (label, position) in [
+            ("Left", Position::Left),
+            ("Right", Position::Right),
+            ("Top", Position::Top),
+            ("Bottom", Position::Bottom),
+        ] {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("flat");
+            button.connect_clicked(clone!(
+                #[weak(rename_to = window)]
+                self,
+                #[weak]
+                popover,
+                #[strong]
+                device,
+                move |_| {
+                    popover.popdown();
+                    window.request(FrontendRequest::AddDiscovered {
+                        device: device.clone(),
+                        position,
+                    });
+                }
+            ));
+            positions.append(&button);
+        }
+        popover.set_child(Some(&positions));
+        menu.set_popover(Some(&popover));
+        row.add_suffix(&menu);
+        row
+    }
+
     fn create_client_row(&self, client_object: &ClientObject) -> ClientRow {
         let row = ClientRow::new(client_object);
         row.bind(client_object);
@@ -291,6 +389,7 @@ impl Window {
         self.clients().append(&client);
         self.update_placeholder_visibility();
         self.update_dns_state(handle, !state.ips.is_empty());
+        self.refresh_discovered();
     }
 
     pub(super) fn update_client_list(
@@ -330,6 +429,7 @@ impl Window {
         if self.clients().n_items() == 0 {
             self.update_placeholder_visibility();
         }
+        self.refresh_discovered();
     }
 
     pub(super) fn update_client_config(&self, handle: ClientHandle, client: ClientConfig) {
@@ -340,6 +440,7 @@ impl Window {
         row.set_hostname(client.hostname);
         row.set_port(client.port);
         row.set_position(client.pos);
+        self.refresh_discovered();
     }
 
     pub(super) fn update_client_state(&self, handle: ClientHandle, state: ClientState) {
@@ -372,6 +473,7 @@ impl Window {
             crate::client_object::peer_commit_to_string(state.peer_commit),
         );
         row.refresh_version_status();
+        self.refresh_discovered();
     }
 
     fn client_object_for_handle(&self, handle: ClientHandle) -> Option<ClientObject> {
@@ -414,8 +516,8 @@ impl Window {
         self.request(FrontendRequest::Create);
     }
 
-    fn open_fingerprint_dialog(&self, fp: Option<String>) {
-        let window = FingerprintWindow::new(fp);
+    fn open_fingerprint_dialog(&self, fp: Option<String>, description: Option<String>) {
+        let window = FingerprintWindow::new(fp, description);
         window.set_transient_for(Some(self));
         window.connect_closure(
             "confirm-clicked",
@@ -639,11 +741,22 @@ impl Window {
         self.imp().fingerprint_row.set_subtitle(fingerprint);
     }
 
+    /// hostname of the discovered device with the given fingerprint
+    fn discovered_hostname(&self, fingerprint: &str) -> Option<String> {
+        self.imp()
+            .discovered
+            .borrow()
+            .iter()
+            .find(|d| d.fingerprint == fingerprint)
+            .map(|d| d.hostname.clone())
+    }
+
     pub(super) fn request_authorization(&self, fingerprint: &str) {
         if let Some(w) = self.imp().authorization_window.borrow_mut().take() {
             w.close();
         }
-        let window = AuthorizationWindow::new(fingerprint);
+        let hostname = self.discovered_hostname(fingerprint);
+        let window = AuthorizationWindow::new(fingerprint, hostname.as_deref());
         window.set_transient_for(Some(self));
         window.connect_closure(
             "confirm-clicked",
@@ -653,7 +766,8 @@ impl Window {
                 self,
                 move |w: AuthorizationWindow, fp: String| {
                     w.close();
-                    parent.open_fingerprint_dialog(Some(fp));
+                    let description = parent.discovered_hostname(&fp);
+                    parent.open_fingerprint_dialog(Some(fp), description);
                 }
             ),
         );

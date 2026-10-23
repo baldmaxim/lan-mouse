@@ -324,6 +324,9 @@ fn build_ui(app: &Application) {
                     FrontendEvent::IncomingDisconnected(addr) => {
                         window.show_toast(format!("{addr} disconnected").as_str());
                     }
+                    FrontendEvent::DiscoveredDevices(devices) => {
+                        window.set_discovered_devices(devices)
+                    }
                     FrontendEvent::TransferStarted {
                         transfer_id,
                         incoming,

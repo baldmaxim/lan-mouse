@@ -328,6 +328,11 @@ It is of the form "aa:bb:cc:..."
 Authorized devices can be persisted using the configuration file (see [Configuration](#configuration)).
 
 If the device still can not be entered, make sure you have UDP port `4242` (or the one selected) opened up in your firewall.
+
+**Automatic discovery:** Lan Mouse instances on the same network find each other via mDNS / DNS-SD (`_lan-mouse._udp`)
+and are listed under "Devices on this network". Pick a position with `Add` to create the connection and authorize the
+device's fingerprint in one step (do the same on the other machine for two-way control).
+Make sure UDP port `5353` (mDNS) is not blocked by your firewall.
 </details>
 
 <details>

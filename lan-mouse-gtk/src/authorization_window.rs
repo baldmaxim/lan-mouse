@@ -11,9 +11,12 @@ glib::wrapper! {
 }
 
 impl AuthorizationWindow {
-    pub(crate) fn new(fingerprint: &str) -> Self {
+    pub(crate) fn new(fingerprint: &str, hostname: Option<&str>) -> Self {
         let window: Self = Object::builder().build();
         window.imp().set_fingerprint(fingerprint);
+        if let Some(hostname) = hostname {
+            window.imp().set_hostname(hostname);
+        }
         window
     }
 }

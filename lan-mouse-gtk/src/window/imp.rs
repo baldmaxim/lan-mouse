@@ -7,7 +7,7 @@ use glib::subclass::InitializingObject;
 use gtk::glib::clone;
 use gtk::{Button, CompositeTemplate, Entry, Image, Label, ListBox, gdk, gio, glib};
 
-use lan_mouse_ipc::{DEFAULT_PORT, FrontendRequestWriter};
+use lan_mouse_ipc::{DEFAULT_PORT, DiscoveredDevice, FrontendRequestWriter};
 
 use crate::authorization_window::AuthorizationWindow;
 
@@ -26,6 +26,10 @@ pub struct Window {
     pub client_list: TemplateChild<ListBox>,
     #[template_child]
     pub client_placeholder: TemplateChild<ActionRow>,
+    #[template_child]
+    pub discovered_list: TemplateChild<ListBox>,
+    #[template_child]
+    pub discovered_placeholder: TemplateChild<ActionRow>,
     #[template_child]
     pub port_entry: TemplateChild<Entry>,
     #[template_child]
@@ -48,6 +52,10 @@ pub struct Window {
     pub authorized_list: TemplateChild<ListBox>,
     pub clients: RefCell<Option<gio::ListStore>>,
     pub authorized: RefCell<Option<gio::ListStore>>,
+    /// all devices found on the network
+    pub discovered: RefCell<Vec<DiscoveredDevice>>,
+    /// devices currently listed in `discovered_list`
+    pub discovered_shown: RefCell<Vec<DiscoveredDevice>>,
     pub frontend_request_writer: RefCell<Option<FrontendRequestWriter>>,
     pub port: Cell<u16>,
     pub capture_active: Cell<bool>,
@@ -175,7 +183,7 @@ impl Window {
 
     #[template_callback]
     fn handle_add_cert_fingerprint(&self, _button: &Button) {
-        self.obj().open_fingerprint_dialog(None);
+        self.obj().open_fingerprint_dialog(None, None);
     }
 
     pub fn set_port(&self, port: u16) {
@@ -202,6 +210,7 @@ impl ObjectImpl for Window {
         obj.setup_icon();
         obj.setup_clients();
         obj.setup_authorized();
+        obj.refresh_discovered();
     }
 }
 

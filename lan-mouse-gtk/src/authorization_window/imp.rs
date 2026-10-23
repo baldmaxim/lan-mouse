@@ -15,6 +15,8 @@ pub struct AuthorizationWindow {
     #[template_child]
     pub fingerprint: TemplateChild<Label>,
     #[template_child]
+    pub message: TemplateChild<Label>,
+    #[template_child]
     pub cancel_button: TemplateChild<Button>,
     #[template_child]
     pub confirm_button: TemplateChild<Button>,
@@ -49,6 +51,12 @@ impl AuthorizationWindow {
     #[template_callback]
     fn handle_cancel(&self, _: Button) {
         self.obj().emit_by_name("cancel-clicked", &[])
+    }
+
+    pub(super) fn set_hostname(&self, hostname: &str) {
+        self.message.set_text(&format!(
+            "An unauthorized Device ({hostname}) is trying to connect. Do you want to authorize this Device?"
+        ));
     }
 
     pub(super) fn set_fingerprint(&self, fingerprint: &str) {

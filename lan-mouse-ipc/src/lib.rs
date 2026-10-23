@@ -157,6 +157,18 @@ impl Default for ClientConfig {
     }
 }
 
+/// another lan-mouse instance found on the local network (mDNS)
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]
+pub struct DiscoveredDevice {
+    /// instance name, usually the hostname of the device
+    pub hostname: String,
+    /// ip addresses of the device, ipv4 first
+    pub ips: Vec<IpAddr>,
+    pub port: u16,
+    /// sha256 fingerprint of the certificate of the device
+    pub fingerprint: String,
+}
+
 pub type ClientHandle = u64;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -226,6 +238,8 @@ pub enum FrontendEvent {
     IncomingDisconnected(SocketAddr),
     /// failed connection attempt (approval for fingerprint required)
     ConnectionAttempt { fingerprint: String },
+    /// lan-mouse devices currently visible on the local network
+    DiscoveredDevices(Vec<DiscoveredDevice>),
     /// file transfer started
     TransferStarted {
         transfer_id: u64,
@@ -286,6 +300,11 @@ pub enum FrontendRequest {
     UpdateLeaveHook(u64, Option<String>),
     /// save config file
     SaveConfiguration,
+    /// add a discovered device as a client and authorize its fingerprint
+    AddDiscovered {
+        device: DiscoveredDevice,
+        position: Position,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
