@@ -116,7 +116,10 @@ pub fn read_file_urls() -> Vec<PathBuf> {
                 if !url.isFileURL() {
                     return None;
                 }
-                url.path().map(|p| PathBuf::from(p.to_string()))
+                // Finder puts file reference URLs (file:///.file/id=...); resolve to a path URL.
+                url.filePathURL()?
+                    .path()
+                    .map(|p| PathBuf::from(p.to_string()))
             })
             .collect()
     })
