@@ -3,6 +3,7 @@
 //! Every call is wrapped in an autorelease pool; NSPasteboard may be used from any thread.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
@@ -29,6 +30,16 @@ pb_type!(type_png, NSPasteboardTypePNG);
 pb_type!(type_tiff, NSPasteboardTypeTIFF);
 pb_type!(type_file_url, NSPasteboardTypeFileURL);
 
+/// NSPasteboard is not safe for concurrent use: the clipboard task and the file task
+/// read it from different threads, which crashed in `_updateTypeCacheIfNeeded`.
+static PASTEBOARD_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock() -> MutexGuard<'static, ()> {
+    PASTEBOARD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn has_type(pb: &NSPasteboard, types: &[&PbType]) -> bool {
     pb.availableTypeFromArray(&NSArray::from_slice(types))
         .is_some()
@@ -36,11 +47,13 @@ fn has_type(pb: &NSPasteboard, types: &[&PbType]) -> bool {
 
 /// Current `changeCount` of the general pasteboard.
 pub fn change_count() -> isize {
+    let _guard = lock();
     autoreleasepool(|_| NSPasteboard::generalPasteboard().changeCount())
 }
 
 /// Plain text (`public.utf8-plain-text`).
 pub fn read_string() -> Option<String> {
+    let _guard = lock();
     autoreleasepool(|_| {
         let pb = NSPasteboard::generalPasteboard();
         pb.stringForType(type_string()).map(|s| s.to_string())
@@ -49,6 +62,7 @@ pub fn read_string() -> Option<String> {
 
 /// Raw bytes of `public.html`.
 pub fn read_html() -> Option<Vec<u8>> {
+    let _guard = lock();
     autoreleasepool(|_| {
         let pb = NSPasteboard::generalPasteboard();
         pb.dataForType(type_html()).map(|d| d.to_vec())
@@ -57,6 +71,7 @@ pub fn read_html() -> Option<Vec<u8>> {
 
 /// PNG bytes; falls back to TIFF converted to PNG.
 pub fn read_png() -> Result<Option<Vec<u8>>, String> {
+    let _guard = lock();
     let (png, tiff) = autoreleasepool(|_| {
         let pb = NSPasteboard::generalPasteboard();
         (
@@ -79,15 +94,18 @@ pub fn read_png() -> Result<Option<Vec<u8>>, String> {
 }
 
 pub fn has_string() -> bool {
+    let _guard = lock();
     autoreleasepool(|_| has_type(&NSPasteboard::generalPasteboard(), &[type_string()]))
 }
 
 pub fn has_html() -> bool {
+    let _guard = lock();
     autoreleasepool(|_| has_type(&NSPasteboard::generalPasteboard(), &[type_html()]))
 }
 
 /// True if a PNG or TIFF image is present.
 pub fn has_image() -> bool {
+    let _guard = lock();
     autoreleasepool(|_| {
         has_type(
             &NSPasteboard::generalPasteboard(),
@@ -97,11 +115,13 @@ pub fn has_image() -> bool {
 }
 
 pub fn has_file_urls() -> bool {
+    let _guard = lock();
     autoreleasepool(|_| has_type(&NSPasteboard::generalPasteboard(), &[type_file_url()]))
 }
 
 /// Local paths of all `public.file-url` items (what Finder puts on Cmd+C).
 pub fn read_file_urls() -> Vec<PathBuf> {
+    let _guard = lock();
     autoreleasepool(|_| {
         let pb = NSPasteboard::generalPasteboard();
         let Some(items) = pb.pasteboardItems() else {
@@ -128,6 +148,7 @@ pub fn read_file_urls() -> Vec<PathBuf> {
 /// Replaces the pasteboard contents with the given representations.
 /// Returns the `changeCount` after the write.
 pub fn write_items(text: Option<String>, html: Option<Vec<u8>>, png: Option<Vec<u8>>) -> isize {
+    let _guard = lock();
     autoreleasepool(|_| {
         let pb = NSPasteboard::generalPasteboard();
         pb.clearContents();
@@ -147,6 +168,7 @@ pub fn write_items(text: Option<String>, html: Option<Vec<u8>>, png: Option<Vec<
 /// Replaces the pasteboard contents with file URLs (Finder can paste them).
 /// Returns the `changeCount` after the write.
 pub fn write_file_urls(paths: &[PathBuf]) -> isize {
+    let _guard = lock();
     autoreleasepool(|_| {
         let urls: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = paths
             .iter()
