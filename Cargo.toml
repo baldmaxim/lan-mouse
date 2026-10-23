@@ -78,6 +78,12 @@ libc = "0.2.148"
 ashpd = { version = "0.13.9", default-features = false, features = ["clipboard", "tokio"], optional = true }
 wl-clipboard-rs = "0.9.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem"] }
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = { version = "5.4.1", features = ["monitor"] }
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg"] }

@@ -12,6 +12,11 @@ pub mod os_linux;
 #[cfg(target_os = "windows")]
 pub mod os_windows;
 
+#[cfg(target_os = "macos")]
+pub mod macos_pasteboard;
+#[cfg(target_os = "macos")]
+pub mod os_macos;
+
 use lan_mouse_ipc::{ClientHandle, FrontendEvent};
 use protocol::ClipboardMessage;
 use std::sync::LazyLock;
@@ -60,6 +65,11 @@ pub fn init_clipboard_task() {
     #[cfg(target_os = "windows")]
     {
         os_windows::init_clipboard_task();
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        os_macos::init_clipboard_task();
     }
 
     file_task::init_file_task();

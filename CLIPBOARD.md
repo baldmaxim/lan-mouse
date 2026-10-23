@@ -1,6 +1,6 @@
 # Lan Mouse Clipboard Architecture
 
-This document describes the clipboard synchronization and file transfer implementation across Windows and Linux (Wayland).
+This document describes the clipboard synchronization and file transfer implementation across Windows, macOS and Linux (Wayland).
 
 ## Architecture
 
@@ -18,6 +18,13 @@ On Linux Wayland, clipboard integration is built on two primary layers:
 On Windows, clipboard is managed natively via Win32 API (`clipboard-win` crate).
 - Windows uses a polling/listener loop to capture `WM_CLIPBOARDUPDATE` messages.
 - **Echo Suppression:** When Lan Mouse programmatically writes to the Windows clipboard, it temporarily records the OS sequence number using `GetClipboardSequenceNumber()`. If a subsequent `WM_CLIPBOARDUPDATE` matches this sequence number, it is safely ignored to prevent infinite network echo loops.
+
+### macOS
+On macOS, clipboard is managed via `NSPasteboard` (`objc2-app-kit`, helpers in `macos_pasteboard.rs`).
+- macOS has no clipboard notifications, so a thread polls `changeCount` every 250 ms.
+- **Echo Suppression:** After a programmatic write, the `changeCount` returned by the write is recorded; the poller ignores the change that matches it. File writes use `FILE_IS_WRITING` / `FILE_EXPECTED_SEQ` (`changeCount` as `u32`) like on Windows.
+- **Files:** Finder copy puts `public.file-url` items on the pasteboard. If any are present, text/image types are not reported (Finder also adds the file name and icon), and the files are sent by `file_task`. Received files are written as file URLs, so Finder Cmd+V pastes them.
+- **Images:** PNG is read directly; if absent, TIFF is converted to PNG. Images are written as PNG.
 
 ## Protocol & Flow Control
 
@@ -37,4 +44,3 @@ Cross-platform file transfers are explicitly supported. Files bypass the normal 
 ## Known Limitations
 - GNOME (Mutter) famously refuses to implement the `wlr-data-control` Wayland protocol. Because of this, Wayland-native clipboard synchronization (including files and plaintext) using `wl-clipboard` will silently fail on GNOME. Users must currently rely on X11 fallback clipboards or wait for a full `ashpd` D-Bus clipboard implementation.
 - KDE Plasma Wayland (Klipper) has strict constraints on clipboard ownership. If `wl-clipboard-rs` hangs or fails to relinquish ownership, KDE might silently reject rich MIME types (like HTML or Image/PNG) while continuing to accept Plaintext. 
-- macOS is currently unsupported for native file-transfer integration.

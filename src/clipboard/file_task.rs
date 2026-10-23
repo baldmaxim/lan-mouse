@@ -34,10 +34,10 @@ struct ActiveIncomingTransfer {
 pub static EXPECTING_FILE_ECHO: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub(crate) static FILE_IS_WRITING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub(crate) static FILE_EXPECTED_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
@@ -659,6 +659,13 @@ async fn read_os_clipboard_files() -> Vec<PathBuf> {
     .unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
+async fn read_os_clipboard_files() -> Vec<PathBuf> {
+    tokio::task::spawn_blocking(crate::clipboard::macos_pasteboard::read_file_urls)
+        .await
+        .unwrap_or_default()
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 async fn read_os_clipboard_files() -> Vec<PathBuf> {
     let output = match tokio::process::Command::new("wl-paste")
@@ -742,6 +749,19 @@ async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
         if !success {
             log::error!("Failed to write files to Windows clipboard after 5 attempts");
         }
+        FILE_IS_WRITING.store(false, std::sync::atomic::Ordering::SeqCst);
+    })
+    .await
+    .unwrap_or(());
+}
+
+#[cfg(target_os = "macos")]
+async fn write_os_clipboard_files(paths: Vec<PathBuf>) {
+    FILE_IS_WRITING.store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || {
+        log::info!("Attempting to write paths to macOS pasteboard: {:?}", paths);
+        let change_count = crate::clipboard::macos_pasteboard::write_file_urls(&paths);
+        FILE_EXPECTED_SEQ.store(change_count as u32, std::sync::atomic::Ordering::SeqCst);
         FILE_IS_WRITING.store(false, std::sync::atomic::Ordering::SeqCst);
     })
     .await

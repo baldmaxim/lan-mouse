@@ -1,5 +1,5 @@
 use ashpd::desktop::Session;
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use std::pin::Pin;
 use tokio::io::AsyncReadExt;
 
